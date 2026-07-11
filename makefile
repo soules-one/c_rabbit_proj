@@ -22,6 +22,11 @@ endif
 
 define run_tests_pipeline
 	@echo "--- Testing target: $(1) ---"
+	# rfc4503 test vectors check
+	$(CC) $(CFLAGS) $(2) test.c rabbit.c -o $(BUILD_DIR)/test_vec_tmp
+	$(BUILD_DIR)/test_vec_tmp
+	@rm -f $(BUILD_DIR)/test_vec_tmp
+
 	# generated key with iv
 	$(1) -k $(BUILD_DIR)/test.key
 	cat rabbit.h | $(1) -e $(BUILD_DIR)/test.key > $(BUILD_DIR)/enc_iv.bin

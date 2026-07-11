@@ -23,6 +23,7 @@
     #define ENCRYPT_SHIFT 3
 #endif
 
+//Struct that contains variables used in gamma generation and stream encryption.
 typedef struct __scheduler_t {
     uint32_t X[8];
     uint32_t C[8];
@@ -31,6 +32,7 @@ typedef struct __scheduler_t {
     uint8_t pos;
 } scheduler;
 
+// function with volatile memory access. Used to wipe key from memory.
 static inline void secure_wipe(void *v, size_t n) {
     volatile uint8_t *p = (volatile uint8_t *)v;
     while (n--) {
@@ -38,11 +40,18 @@ static inline void secure_wipe(void *v, size_t n) {
     }
 }
 
+// Inits passed scheduler struct, using key and IV array. Pass NULL point for IV to not use IV. 
 void initScheduler(scheduler * state, const rabbit_word_t * key, const rabbit_word_t * iv);
+
+// Generates new S-block.
 void extractSBlock(scheduler * state);
+
 uint8_t encryptByte(scheduler * state, uint8_t byte);
+
+// Encrypts whole word (size of word is based on biggest available uint).
 rabbit_word_t encryptWord(scheduler * state, rabbit_word_t block);
 
+// Wraps Rabbit scheduler to be used as random number generator.
 typedef struct csrng_t{
     scheduler state;
 } csrng;
