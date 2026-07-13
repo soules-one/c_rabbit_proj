@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include "rabbit.h"
+#include "../lib/rabbit.h"
 
 void print_usage(const char *prog) {
     fprintf(stderr, "Usage:\n");

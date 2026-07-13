@@ -23,25 +23,25 @@ endif
 define run_tests_pipeline
 	@echo "--- Testing target: $(1) ---"
 	# rfc4503 test vectors check
-	$(CC) $(CFLAGS) $(2) test.c rabbit.c -o $(BUILD_DIR)/test_vec_tmp
+	$(CC) $(CFLAGS) $(2) ./lib/test.c ./lib/rabbit.c -o $(BUILD_DIR)/test_vec_tmp
 	$(BUILD_DIR)/test_vec_tmp
 	@rm -f $(BUILD_DIR)/test_vec_tmp
 
 	# generated key with iv
 	$(1) -k $(BUILD_DIR)/test.key
-	cat rabbit.h | $(1) -e $(BUILD_DIR)/test.key > $(BUILD_DIR)/enc_iv.bin
+	cat ./lib/rabbit.h | $(1) -e $(BUILD_DIR)/test.key > $(BUILD_DIR)/enc_iv.bin
 	cat $(BUILD_DIR)/enc_iv.bin | $(1) -d $(BUILD_DIR)/test.key > $(BUILD_DIR)/dec_iv.bin
-	@cmp rabbit.h $(BUILD_DIR)/dec_iv.bin && echo "[ SUCCESS ] Fresh key + Random IV passed" || exit 1
+	@cmp ./lib/rabbit.h $(BUILD_DIR)/dec_iv.bin && echo "[ SUCCESS ] Fresh key + Random IV passed" || exit 1
 
 	# generated key with no iv
-	cat rabbit.h | $(1) -e -noiv $(BUILD_DIR)/test.key > $(BUILD_DIR)/enc_noiv.bin
+	cat ./lib/rabbit.h | $(1) -e -noiv $(BUILD_DIR)/test.key > $(BUILD_DIR)/enc_noiv.bin
 	cat $(BUILD_DIR)/enc_noiv.bin | $(1) -d -noiv $(BUILD_DIR)/test.key > $(BUILD_DIR)/dec_noiv.bin
-	@cmp rabbit.h $(BUILD_DIR)/dec_noiv.bin && echo "[ SUCCESS ] Fresh key + No IV passed" || exit 1
+	@cmp ./lib/rabbit.h $(BUILD_DIR)/dec_noiv.bin && echo "[ SUCCESS ] Fresh key + No IV passed" || exit 1
 
 	# executable as a key with no iv
-	cat rabbit.h | $(1) -e -noiv $(1) > $(BUILD_DIR)/enc_self.bin
+	cat ./lib/rabbit.h | $(1) -e -noiv $(1) > $(BUILD_DIR)/enc_self.bin
 	cat $(BUILD_DIR)/enc_self.bin | $(1) -d -noiv $(1) > $(BUILD_DIR)/dec_self.bin
-	@cmp rabbit.h $(BUILD_DIR)/dec_self.bin && echo "[ SUCCESS ] Binary file as key passed\n" || exit 1
+	@cmp ./lib/rabbit.h $(BUILD_DIR)/dec_self.bin && echo "[ SUCCESS ] Binary file as key passed\n" || exit 1
 endef
 
 
@@ -75,21 +75,25 @@ profile: all
 	@rm -f $(BUILD_DIR)/large.bin
 	@echo "END OF TEST"
 
+ports_setup:
+	stty -F /dev/ttyUSB1 115200 raw -echo
+	stty -F /dev/ttyUSB2 115200 raw -echo
+
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 
-$(CLI32): main.c rabbit.c rabbit.h
-	$(CC) $(CFLAGS) -m32 -DRABBIT_32BIT main.c rabbit.c -o $@
+$(CLI32): ./cli/main.c ./lib/rabbit.c ./lib/rabbit.h
+	$(CC) $(CFLAGS) -m32 -DRABBIT_32BIT ./cli/main.c ./lib/rabbit.c -o $@
 
-$(LIB32): rabbit.c rabbit.h
-	$(CC) $(CFLAGS) -m32 -DRABBIT_32BIT $(PIC) -shared rabbit.c -o $@
+$(LIB32): ./lib/rabbit.c ./lib/rabbit.h
+	$(CC) $(CFLAGS) -m32 -DRABBIT_32BIT $(PIC) -shared ./lib/rabbit.c -o $@
 
-$(CLI64): main.c rabbit.c rabbit.h
-	$(CC) $(CFLAGS) -m64 main.c rabbit.c -o $@
+$(CLI64): ./cli/main.c ./lib/rabbit.c ./lib/rabbit.h
+	$(CC) $(CFLAGS) -m64 ./cli/main.c ./lib/rabbit.c -o $@
 
-$(LIB64): rabbit.c rabbit.h
-	$(CC) $(CFLAGS) -m64 $(PIC) -shared rabbit.c -o $@
+$(LIB64): ./lib/rabbit.c ./lib/rabbit.h
+	$(CC) $(CFLAGS) -m64 $(PIC) -shared ./lib/rabbit.c -o $@
 
 clean:
 	rm -rf $(BUILD_DIR)

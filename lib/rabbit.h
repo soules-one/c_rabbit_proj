@@ -9,6 +9,7 @@
 #define LS16B 65535U
 #define LS32B 4294967295U
 
+
 #ifdef RABBIT_32BIT
     typedef uint32_t rabbit_word_t;
     #define RABBIT_S_LEN 4

@@ -12,26 +12,23 @@
 
 #define ROTL32(a, b) (((uint32_t)(a) << (b)) | ((uint32_t)(a) >> (32 - (b))))
 
-#ifdef RABBIT_32BIT
-static inline uint32_t MSWSQ(uint32_t a){
-    uint32_t ah = a >> 16, al = a & LS16B;
-    uint32_t sqh = ah * ah, sqm = ah * al, sql = al * al;
-    return sqh + ((sqm + ((sql) >> 16)) >> 15);
-}
-#endif
-
-
 
 static inline uint32_t g(uint32_t u, uint32_t v) {
-    uint32_t res;
-    #ifdef RABBIT_32BIT
-    uint32_t sm = u + v;
-    res = (uint32_t)((sm * sm) ^ (MSWSQ(sm)));
-    #else
-    uint64_t sq = (uint64_t)(u + v) * (u + v);
-    res = (uint32_t)(sq ^ (sq >> 32));
-    #endif
-    return res;
+    // Removed to allow better compiler optimisation
+    /* #ifdef RABBIT_32BIT
+    const uint32_t s  = u + v; 
+    const uint32_t a0 = s & LS16B;
+    const uint32_t a1 = s >> 16;
+    const uint32_t p0 = a0 * a0;
+    const uint32_t p1 = a0 * a1;
+    const uint32_t p2 = a1 * a1;
+    const uint32_t lo = p0 + (p1 << 17);
+    return p2 + (p1 >> 15) + (lo < p0) ^ lo;
+    */
+    //#else
+    const uint64_t sq = (uint64_t)(u + v) * (u + v);
+    return (uint32_t)(sq ^ (sq >> 32));
+    //#endif
 }
 
 void counterUpdate(scheduler * state) {
@@ -99,8 +96,8 @@ void initScheduler(scheduler * state, const rabbit_word_t * key, const rabbit_wo
 
     if (iv != NULL) {
         #ifdef RABBIT_32BIT
-        uint32_t iv0 = (uint32_t)(iv[0]);
-        uint32_t iv1 = (uint32_t)(iv[1]);
+        uint32_t iv0 = (uint32_t)(iv[1]);
+        uint32_t iv1 = (uint32_t)(iv[0]);
         #else
         uint32_t iv0 = (uint32_t)(iv[0] & 0xFFFFFFFF);
         uint32_t iv1 = (uint32_t)(iv[0] >> 32);
