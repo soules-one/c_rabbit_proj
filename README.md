@@ -32,7 +32,7 @@ ESP32 uses UART to recive and transmit data. Original setup for usage with Unix 
 
 GPIO 4 used to recieve signals and GPIO 17 used to transmit signals (can be connected to one or two USB-TTL or any other UART devices). Connecting GPIO 18 and 19 will result in reset of saved key and test flag.
 
-As of now, flash encryption and custom partition table is enabled in sdkconfig.
+##### Be aware, flash encryption and custom partition table is enabled in sdkconfig.
 
 #### Usage
 If key is not found in NVS, than next recieved 16 bytes would be saved as encryption key and will not be deleted until full reset.

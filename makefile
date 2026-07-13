@@ -76,8 +76,8 @@ profile: all
 	@echo "END OF TEST"
 
 ports_setup:
-	stty -F /dev/ttyUSB1 115200 raw -echo
-	stty -F /dev/ttyUSB2 115200 raw -echo
+	stty -F /dev/ttyUSB1 2000000 raw -echo
+	stty -F /dev/ttyUSB2 2000000 raw -echo
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)

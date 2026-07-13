@@ -13,22 +13,23 @@
 static const char *TAG = "CRYPTO_CORE";
 
 // pin setup
-#define UART1_PORT_NUM      UART_NUM_1
-#define UART1_RX_PIN        GPIO_NUM_4   
-#define UART1_TX_PIN        UART_PIN_NO_CHANGE
+#define UART1_PORT_NUM        UART_NUM_1
+#define UART1_RX_PIN          GPIO_NUM_4   
+#define UART1_TX_PIN          UART_PIN_NO_CHANGE
 
-#define UART2_PORT_NUM      UART_NUM_2
-#define UART2_TX_PIN        GPIO_NUM_17  
-#define UART2_RX_PIN        UART_PIN_NO_CHANGE
+#define UART2_PORT_NUM        UART_NUM_2
+#define UART2_TX_PIN          GPIO_NUM_17  
+#define UART2_RX_PIN          UART_PIN_NO_CHANGE
 
-#define BLUE_LED_GPIO       GPIO_NUM_2   
+#define BLUE_LED_GPIO         GPIO_NUM_2   
 
-#define PIN_RESET_SOURCE    GPIO_NUM_18  
-#define PIN_RESET_DETECT    GPIO_NUM_19  
+#define PIN_RESET_SOURCE      GPIO_NUM_18  
+#define PIN_RESET_DETECT      GPIO_NUM_19  
 
-#define BUF_SIZE            1024
-#define KEY_SIZE            16
-#define IV_SIZE             8
+#define BUF_SIZE              4096
+#define KEY_SIZE              16
+#define IV_SIZE               8
+#define UART_QUEUE_SIZE       20
 
 typedef enum {
     STATE_WAIT_KEY,
@@ -45,6 +46,7 @@ uint8_t key_len = 0;
 uint8_t iv_len = 0;
 
 scheduler rabbit_ctx;
+QueueHandle_t uart1_queue;
 
 // Test functions
 void load_key(const uint8_t *raw_key, rabbit_word_t *key) {
@@ -190,14 +192,16 @@ void init_hardware(void) {
     ESP_ERROR_CHECK(ret);
 
     uart_config_t uart_config = {
-        .baud_rate = 115200, .data_bits = UART_DATA_8_BITS,
+        .baud_rate = 2000000, .data_bits = UART_DATA_8_BITS,
         .parity = UART_PARITY_DISABLE, .stop_bits = UART_STOP_BITS_1,
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE, .source_clk = UART_SCLK_DEFAULT,
     };
 
     ESP_ERROR_CHECK(uart_param_config(UART1_PORT_NUM, &uart_config));
     ESP_ERROR_CHECK(uart_set_pin(UART1_PORT_NUM, UART1_TX_PIN, UART1_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
-    ESP_ERROR_CHECK(uart_driver_install(UART1_PORT_NUM, BUF_SIZE * 4, BUF_SIZE * 4, 0, NULL, 0));
+    ESP_ERROR_CHECK(uart_driver_install(UART1_PORT_NUM, BUF_SIZE * 4, BUF_SIZE * 4, UART_QUEUE_SIZE, &uart1_queue, 0));
+    ESP_ERROR_CHECK(uart_set_rx_full_threshold(UART1_PORT_NUM, 120));
+    ESP_ERROR_CHECK(uart_set_rx_timeout(UART1_PORT_NUM, 10));
 
     ESP_ERROR_CHECK(uart_param_config(UART2_PORT_NUM, &uart_config));
     ESP_ERROR_CHECK(uart_set_pin(UART2_PORT_NUM, UART2_TX_PIN, UART2_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
@@ -212,62 +216,75 @@ void init_hardware(void) {
 }
 
 // stream task
-void crypto_task(void *pvParameters) {
-    uint8_t *data = (uint8_t *) malloc(BUF_SIZE);
+void IRAM_ATTR crypto_task(void *pvParameters) {
+    static uint8_t data[BUF_SIZE] __attribute__((aligned(4))); 
     rabbit_word_t r_key[RABBIT_KEY_WORDS];
     rabbit_word_t r_iv[RABBIT_IV_WORDS];
+    uart_event_t event;
     
     while (1) {
-        int length = uart_read_bytes(UART1_PORT_NUM, data, BUF_SIZE, pdMS_TO_TICKS(20));
-        
-        if (length > 0) {
-            int i = 0;
-            while (i < length) {
-                if (current_state == STATE_WAIT_KEY) {
-                    key_buffer[key_len++] = data[i++];
-                    if (key_len == KEY_SIZE) {
-                        save_key_to_memory();
-                        current_state = STATE_WAIT_IV;
-                        ESP_LOGI(TAG, "16-byte Key saved. Waiting for 8-byte IV...");
-                    }
-                } 
-                else if (current_state == STATE_WAIT_IV) {
-                    iv_buffer[iv_len++] = data[i++];
-                    if (iv_len == IV_SIZE) {
-                        // init rabbit context
-                        load_key(key_buffer, r_key);
-                        load_iv(iv_buffer, r_iv);
-                        initScheduler(&rabbit_ctx, r_key, r_iv);
+        if (xQueueReceive(uart1_queue, (void * )&event, portMAX_DELAY)) {
+            if (event.type == UART_DATA) {
+                int length = uart_read_bytes(UART1_PORT_NUM, data, (event.size > BUF_SIZE) ? BUF_SIZE : event.size, portMAX_DELAY);
+                int i = 0;
+                while (i < length) {
+                    if (current_state == STATE_WAIT_KEY) {
+                        key_buffer[key_len++] = data[i++];
+                        if (key_len == KEY_SIZE) {
+                            save_key_to_memory();
+                            current_state = STATE_WAIT_IV;
+                            ESP_LOGI(TAG, "16-byte Key saved. Waiting for 8-byte IV...");
+                        }
+                    } 
+                    else if (current_state == STATE_WAIT_IV) {
+                        iv_buffer[iv_len++] = data[i++];
+                        if (iv_len == IV_SIZE) {
+                            // init rabbit context
+                            load_key(key_buffer, r_key);
+                            load_iv(iv_buffer, r_iv);
+                            initScheduler(&rabbit_ctx, r_key, r_iv);
+                            
+                            current_state = STATE_STREAMING;
+                            ESP_LOGI(TAG, "IV accepted! Crypto stream STARTED.");
+                        }
+                    } 
+                    else if (current_state == STATE_STREAMING) {
+                        uint8_t* ptr = &data[i];
+                        int remaining = length - i;
+                        // ensure memory is aligned
+                        while (remaining > 0 && ((uintptr_t)ptr & 0x03) != 0) {
+                            *ptr = encryptByte(&rabbit_ctx, *ptr);
+                            ptr++;
+                            remaining--;
+                        }
+                        // optimised encryption
+                        uint32_t* word_ptr = (uint32_t*)ptr;
+                        int word_count = remaining / 4;
                         
-                        current_state = STATE_STREAMING;
-                        ESP_LOGI(TAG, "IV accepted! Crypto stream STARTED.");
-                    }
-                } 
-                else if (current_state == STATE_STREAMING) {
-                    int remaining = length - i;
-                    int j = 0;
+                        for (int w = 0; w < word_count; w++) {
+                            word_ptr[w] = encryptWord(&rabbit_ctx, word_ptr[w]);
+                        }
 
-                    // optimised 4 byte encryption
-                    uint32_t *word_ptr = (uint32_t *)(&data[i]);
-                    int word_count = remaining / 4;
-                    
-                    for (int w = 0; w < word_count; w++) {
-                        word_ptr[w] = encryptWord(&rabbit_ctx, word_ptr[w]);
-                    }
-                    
-                    j = word_count * 4;
+                        // handle remainder
+                        ptr = (uint8_t*)(word_ptr + word_count);
+                        remaining -= word_count * 4;
+                        while (remaining > 0) {
+                            *ptr = encryptByte(&rabbit_ctx, *ptr);
+                            ptr++;
+                            remaining--;
+                        }
 
-                    // remainder encrypted per byte
-                    for (; j < remaining; j++) {
-                        data[i + j] = encryptByte(&rabbit_ctx, data[i + j]); 
+                        // send result
+                        uart_write_bytes(UART2_PORT_NUM, (const char*)&data[i], length - i);
+                        
+                        processing_timeout = 3; 
+                        i = length; 
                     }
-                    
-                    uart_write_bytes(UART2_PORT_NUM, (const char*)&data[i], remaining);
-                    uart_wait_tx_done(UART2_PORT_NUM, pdMS_TO_TICKS(100)); 
-                    
-                    processing_timeout = 3; 
-                    i += remaining; 
                 }
+            }else if (event.type == UART_FIFO_OVF) {
+                ESP_LOGE(TAG, "UART HW FIFO Overflow! Data lost.");
+                uart_flush_input(UART1_PORT_NUM);
+                xQueueReset(uart1_queue);
             }
         }
     }
@@ -278,58 +295,61 @@ void crypto_task(void *pvParameters) {
 void app_main(void) {
     init_hardware();
 
-    // Password RESET (also enables test rerun)
-    if (gpio_get_level(PIN_RESET_DETECT) == 0) {
+    // handle nvs in one point
+    nvs_handle_t my_handle;
+    bool nvs_opened = (nvs_open("storage", NVS_READWRITE, &my_handle) == ESP_OK);
+    // key reset
+    if (nvs_opened && gpio_get_level(PIN_RESET_DETECT) == 0) {
         ESP_LOGI(TAG, "!!! RESET JUMPER DETECTED !!!");
-        nvs_handle_t my_handle;
-        if (nvs_open("storage", NVS_READWRITE, &my_handle) == ESP_OK) {
-            nvs_erase_key(my_handle, "rabbit_key");
-            nvs_erase_key(my_handle, "tests_passed");
-            nvs_commit(my_handle);
-            nvs_close(my_handle);
-        }
-        ESP_LOGI(TAG, "Memory wiped. Continuing boot sequence...");
+        nvs_erase_key(my_handle, "rabbit_key");
+        nvs_erase_key(my_handle, "tests_passed");
+        nvs_commit(my_handle);
+        ESP_LOGI(TAG, "Memory wiped.");
         for(int i = 0; i < 3; i++) {
             gpio_set_level(BLUE_LED_GPIO, 1); vTaskDelay(pdMS_TO_TICKS(80));
             gpio_set_level(BLUE_LED_GPIO, 0); vTaskDelay(pdMS_TO_TICKS(80));
         }
     }
 
-    // Test of encryption correctness
     uint8_t tests_passed = 0;
-    nvs_handle_t my_handle;
-    if (nvs_open("storage", NVS_READWRITE, &my_handle) == ESP_OK) {
+    if (nvs_opened) {
         nvs_get_u8(my_handle, "tests_passed", &tests_passed);
-        
+        // launch tests
         if (tests_passed == 0) {
-            ESP_LOGI(TAG, "First boot detected. Running Crypto Tests...");
+            ESP_LOGI(TAG, "First boot. Running Crypto Tests...");
             if (rfcTests()) {
                 nvs_set_u8(my_handle, "tests_passed", 1);
                 nvs_commit(my_handle);
-                ESP_LOGI(TAG, "Tests passed! Flag saved to NVS. Will skip on next boot.");
+                ESP_LOGI(TAG, "Tests passed! Flag saved.");
             } else {
-                ESP_LOGE(TAG, "CRYPTO TESTS FAILED! Halting system for safety.");
-                while(1) { // invalided system will be blocked
+                nvs_close(my_handle); // we won't need it
+                ESP_LOGE(TAG, "CRYPTO TESTS FAILED! Halting.");
+                while(1) {
                     gpio_set_level(BLUE_LED_GPIO, 1); vTaskDelay(pdMS_TO_TICKS(100));
                     gpio_set_level(BLUE_LED_GPIO, 0); vTaskDelay(pdMS_TO_TICKS(100));
                 }
             }
         } else {
-            ESP_LOGI(TAG, "Crypto tests already verified on a previous boot. Skipping.");
+            ESP_LOGI(TAG, "Crypto tests already verified. Skipping.");
         }
-        nvs_close(my_handle);
-    }
 
-    // load key
-    if (load_key_from_memory()) {
-        ESP_LOGI(TAG, "Key found in memory. Ready for IV.");
-        current_state = STATE_WAIT_IV;
+        // load key
+        size_t required_size = KEY_SIZE;
+        if (nvs_get_blob(my_handle, "rabbit_key", key_buffer, &required_size) == ESP_OK && required_size == KEY_SIZE) {
+            ESP_LOGI(TAG, "Key found. Ready for IV.");
+            current_state = STATE_WAIT_IV;
+        } else {
+            ESP_LOGI(TAG, "No Key. Waiting for 16-byte Key...");
+            current_state = STATE_WAIT_KEY;
+        }
+        
+        nvs_close(my_handle); // close for good
     } else {
-        ESP_LOGI(TAG, "No Key in memory. Waiting for 16-byte Key...");
         current_state = STATE_WAIT_KEY;
     }
 
-    xTaskCreate(crypto_task, "crypto_task", 4096, NULL, 15, NULL);
+    // run on sepparate core for future usage
+    xTaskCreatePinnedToCore(crypto_task, "crypto_task", 8192, NULL, 20, NULL, 1);
 
     // LED control
     uint32_t ticks = 0;
